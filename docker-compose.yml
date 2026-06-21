@@ -1,0 +1,33 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama_data:/root/.ollama
+    ports:
+      - "11434:11434"
+    restart: unless-stopped
+
+  qiushi:
+    build: .
+    depends_on:
+      - ollama
+    environment:
+      - LLM_PROVIDER=ollama
+      - LLM_MODEL=llama3.2
+      - OLLAMA_BASE_URL=http://ollama:11434
+    volumes:
+      - qiushi_data:/root/.qiushi
+    stdin_open: true
+    tty: true
+    entrypoint: >
+      sh -c "
+        echo '等待 Ollama 启动...' &&
+        sleep 5 &&
+        ollama pull llama3.2 2>/dev/null || true &&
+        echo '=== 求是 (QiuShi) 已就绪 ===' &&
+        qiushi chat
+      "
+
+volumes:
+  ollama_data:
+  qiushi_data:
