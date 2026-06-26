@@ -39,9 +39,14 @@ def _build_layout() -> Layout:
             Layout(name="debate_view", ratio=3),
             Layout(name="active_panel", size=28),
         )
-    else:
+    elif tw >= 60:
         layout["main"].split_row(
             Layout(name="personas_panel", size=18),
+            Layout(name="debate_view", ratio=1),
+        )
+    else:
+        # 窄屏 (<60)：只显示辩论观点面板
+        layout["main"].split_row(
             Layout(name="debate_view", ratio=1),
         )
     return layout
@@ -69,7 +74,9 @@ def _build_personas_panel(council_results: list[dict], current_name: str | None 
 
 
 def _build_debate_panel(council_results: list[dict]) -> Panel:
-    """中间：各人格的观点"""
+    """中间：各人格的观点（窄屏自适应 padding）"""
+    tw = shutil.get_terminal_size().columns
+    _p = (0, 1) if tw < 60 else (1, 1)
     parts = []
     for r in council_results:
         name = r.get("name", "")
@@ -86,7 +93,7 @@ def _build_debate_panel(council_results: list[dict]) -> Panel:
         "\n".join(parts),
         title="[bold]辩论观点[/bold]",
         border_style=BRAND_SECONDARY,
-        padding=(1, 1),
+        padding=_p,
     )
 
 
@@ -118,14 +125,16 @@ def _build_active_panel(entry: dict | None = None) -> Panel:
 
 
 def _build_summary_panel(synthesis: str) -> Panel:
-    """共识与分歧面板"""
+    """共识与分歧面板（自适应 padding）"""
+    tw = shutil.get_terminal_size().columns
+    v_pad, h_pad = (0, 1) if tw < 60 else (1, 2)
     if not synthesis:
         return Panel("[dim]无综合结论[/dim]", title="[bold]总结[/bold]", border_style=BRAND_PRIMARY)
     return Panel(
         synthesis.strip(),
-        title=f"[bold {BRAND_ACCENT}]══ 共识与分歧 ══[/bold {BRAND_ACCENT}]",
+        title=f"[bold {BRAND_ACCENT}]══ 结构化分析总结 ══[/bold {BRAND_ACCENT}]",
         border_style=BRAND_ACCENT,
-        padding=(1, 2),
+        padding=(v_pad, h_pad),
     )
 
 
@@ -148,9 +157,12 @@ def render_council_debate(
         for r in valid:
             revealed.append(r)
             layout = _build_layout()
-            layout["personas_panel"].update(_build_personas_panel(council_results, r.get("name")))
+            has_personas = layout["main"].get("personas_panel") is not None
+            has_active = layout["main"].get("active_panel") is not None
+            if has_personas:
+                layout["personas_panel"].update(_build_personas_panel(council_results, r.get("name")))
             layout["debate_view"].update(_build_debate_panel(revealed))
-            if layout["main"].get("active_panel") is not None:
+            if has_active:
                 layout["active_panel"].update(_build_active_panel(r))
 
             live.update(layout)
@@ -166,9 +178,12 @@ def render_council_debate(
 
         # 最终：总结面板
         final_layout = _build_layout()
-        final_layout["personas_panel"].update(_build_personas_panel(council_results))
+        has_personas = final_layout["main"].get("personas_panel") is not None
+        has_active = final_layout["main"].get("active_panel") is not None
+        if has_personas:
+            final_layout["personas_panel"].update(_build_personas_panel(council_results))
         final_layout["debate_view"].update(_build_summary_panel(synthesis))
-        if final_layout["main"].get("active_panel") is not None:
+        if has_active:
             final_layout["active_panel"].update(
                 Panel(
                     Align.center(
@@ -191,41 +206,40 @@ def render_council_summary(
     synthesis: str,
     console: Console | None = None,
 ) -> None:
-    """持久摘要面板 — 放在对话历史中供回顾"""
+    """持久摘要面板 — 完整展示各流派观点 + 共识分歧"""
     c = console or Console()
     tw = shutil.get_terminal_size().columns
+    _v, _h = (0, 1) if tw < 60 else (1, 2)
 
-    parts = []
+    has_error = any(r.get("error") for r in council_results)
+    has_short = tw < 50
+
     for r in council_results:
         name = r.get("name", "")
         reply = r.get("reply", "")
         style = get_persona_style(name)
         if r.get("error"):
-            parts.append(f"[red]{style['emoji']} {name}: 失败[/red]")
+            c.print(Panel(
+                f"[red]{style['emoji']} {name}: 失败 ({r['error']})[/red]",
+                border_style="red",
+            ))
             continue
-        # 提取第一段
-        first_para = reply.strip().split("\n\n")[0][:200]
-        parts.append(f"[bold {style['color']}]{style['emoji']} {name}[/bold {style['color']}]")
-        parts.append(f"  [dim]{first_para}[/dim]")
-
-    # 组装
-    if tw >= 60:
-        col1 = "\n".join(parts)
-        total_text = col1
-    else:
-        total_text = "\n".join(parts)
-
-    panel = Panel(
-        total_text,
-        title=f"[bold {BRAND_PRIMARY}]辩论总结[/bold {BRAND_PRIMARY}]",
-        border_style=BRAND_PRIMARY,
-        padding=(1, 2),
-        subtitle="[dim]各哲学人格的核心观点[/dim]",
-    )
-    c.print()
-    c.print(panel)
+        # 超窄屏只展示摘要
+        display_text = reply.strip()
+        if has_short and len(display_text) > 200:
+            display_text = display_text[:200] + "\n\n[dim]...（完整内容见上方辩论动画）[/dim]"
+        c.print(Panel(
+            display_text,
+            title=f"[bold {style['color']}]{style['emoji']} {name}[/bold {style['color']}]",
+            border_style=style["color"],
+            padding=(_v, _h),
+        ))
+        c.print()
 
     if synthesis:
-        c.print()
         c.print(_build_summary_panel(synthesis))
+    # 辩论完成提示
+    sep = "─" * min(tw - 2, 50)
+    c.print(f"[dim]{sep}[/dim]")
+    c.print(f"[dim]{'🔚 辩论完成' if tw >= 50 else '🔚 完成'} · /help 查看命令 · 继续输入即可对话[/dim]")
     c.print()

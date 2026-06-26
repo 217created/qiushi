@@ -27,10 +27,16 @@ def render_dialectic_round(
     follow_up: str | None = None,
     console: Console | None = None,
 ) -> None:
-    """渲染一轮苏格拉底追问的结果"""
+    """渲染一轮苏格拉底追问的结果（窄屏自适应）"""
     c = console or Console()
+    tw = shutil.get_terminal_size().columns
+    v, h = (0, 1) if tw < 60 else (1, 2)
 
-    # 轮次头
+    # 轮次头 — 用分割线分隔多轮
+    if round_num > 1:
+        sep = "─" * min(tw - 2, 40)
+        c.print(f"[dim]{sep}[/dim]")
+
     round_text = Text()
     round_text.append(f"══ 第 {round_num}/{total_rounds} 轮 ══", style=f"bold {BRAND_PRIMARY}")
 
@@ -47,7 +53,7 @@ def render_dialectic_round(
     c.print(Panel(
         Markdown(analysis.strip()),
         border_style=BRAND_SECONDARY,
-        padding=(1, 2),
+        padding=(v, h),
         subtitle=f"[dim]第{round_num}轮分析[/dim]",
     ))
 
@@ -57,22 +63,27 @@ def render_dialectic_round(
         c.print(Panel(
             f"[bold {BRAND_ACCENT}]❓ {follow_up}[/bold {BRAND_ACCENT}]",
             border_style=BRAND_ACCENT,
-            padding=(1, 2),
+            padding=(v, h),
             title="[bold]苏格拉底追问[/bold]",
         ))
 
 
 def render_dialectic_summary(synthesis: str, console: Console | None = None) -> None:
-    """渲染辩证总结"""
+    """渲染辩证总结（窄屏自适应）"""
     c = console or Console()
+    tw = shutil.get_terminal_size().columns
+    v, h = (0, 1) if tw < 60 else (1, 2)
     c.print()
     c.print(Panel(
         Markdown(synthesis.strip()) if "══" not in synthesis else synthesis.strip(),
         border_style=BRAND_PRIMARY,
-        padding=(1, 2),
+        padding=(v, h),
         title=f"[bold {BRAND_PRIMARY}]══ 辩证总结 ══[/bold {BRAND_PRIMARY}]",
         subtitle="[dim]多轮思辨的结晶[/dim]",
     ))
+    sep = "═" * min(tw - 2, 50)
+    c.print(f"[dim]{sep}[/dim]")
+    c.print(f"[dim]{'🔚 辩证完成' if tw >= 50 else '🔚 完成'} · 继续输入即可对话[/dim]")
     c.print()
 
 
@@ -92,7 +103,8 @@ def render_dialectic_full(
     summary_table.add_column("值")
     summary_table.add_row("轮数", str(total))
     summary_table.add_row("追问风格", "苏格拉底式")
-    c.print(Panel(summary_table, border_style=BRAND_PRIMARY, padding=(1, 1)))
+    _v, _h = (0, 1) if tw < 60 else (1, 1)
+    c.print(Panel(summary_table, border_style=BRAND_PRIMARY, padding=(_v, _h)))
 
     # 各轮
     for i, rd in enumerate(rounds_data):
@@ -105,7 +117,7 @@ def render_dialectic_full(
         )
         if i < total - 1 and tw >= 40:
             c.print(f"  [{BRAND_SECONDARY}]│[/{BRAND_SECONDARY}]")
-            c.print(f"  [{BRAND_SECONDARY}]│  等待你的回应...[/{BRAND_SECONDARY}]")
+            c.print(f"  [{BRAND_SECONDARY}]│  请输入你的回应继续追问[/{BRAND_SECONDARY}]")
             c.print(f"  [{BRAND_SECONDARY}]│[/{BRAND_SECONDARY}]")
 
     # 总结

@@ -23,7 +23,7 @@ from rich.text import Text
 from rich.markdown import Markdown
 from rich import box
 from prompt_toolkit import PromptSession
-from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.completion import FuzzyCompleter, WordCompleter
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.keys import Keys
@@ -190,19 +190,51 @@ async def _interactive_tui(
 
     # ── 状态栏 ──
     def status_toolbar():
+        tw = shutil.get_terminal_size().columns
         d_label = {1: "快速", 2: "标准", 3: "深度"}.get(current_depth, "标准")
         t_label = "完整推理" if show_think else "简洁"
-        return f" 🧠 深度:{d_label} | {t_label} | 💬 {len(history)} 条 | 输入 /help 查看命令"
+        cur_scenario = getattr(engine, "_scenario", scenario)
+        if tw < 50:
+            return f"深度{d_label} | {t_label} | {len(history)}条 | /help"
+        elif tw < 80:
+            return f" 🧠 深度:{d_label} | {t_label} | 💬 {len(history)}条 | Ctrl+C 退出 | /help"
+        return f" 🧠 深度:{d_label} | {t_label} | 💬 {len(history)}条 | 🛡️ {cur_scenario} | ↑↓ 浏览历史 · Tab 补全 · /help"
 
     # ── 补全 ──
-    completions = [
+    completion_words = [
         "/help", "/new", "/clear", "/exit", "/quit",
         "/think", "/depth 1", "/depth 2", "/depth 3",
-        "/web", "/profile", "/card", "/note",
+        "/web", "/search", "/profile", "/card", "/note",
         "/dialectic 2 ", "/dialectic 3 ",
         "/council 2 ", "/council 3 ",
+        "/history", "/personae", "/knowledge", "/scenario",
     ]
-    completer = WordCompleter(completions, ignore_case=True)
+    # 中文描述 meta
+    meta_dict = {
+        "/help": "查看所有命令",
+        "/new": "开始新一轮对话",
+        "/clear": "清屏",
+        "/exit": "退出",
+        "/quit": "退出",
+        "/think": "切换显示/隐藏推理过程",
+        "/depth 1": "快速回答模式",
+        "/depth 2": "标准深度回答",
+        "/depth 3": "深度思考回答",
+        "/web": "联网搜索",
+        "/search": "搜索本地知识库",
+        "/profile": "查看/编辑用户画像",
+        "/card": "生成知识卡片",
+        "/note": "添加笔记到 Obsidian",
+        "/dialectic 2 ": "苏格拉底追问 (2轮)",
+        "/dialectic 3 ": "苏格拉底追问 (3轮)",
+        "/council 2 ": "多人格辩论 (2名哲人)",
+        "/council 3 ": "多人格辩论 (3名哲人)",
+        "/history": "查看对话历史",
+        "/personae": "查看哲学人格",
+        "/knowledge": "管理本地知识库",
+        "/scenario": "切换场景",
+    }
+    completer = FuzzyCompleter(WordCompleter(completion_words, meta_dict=meta_dict))
 
     session_ps = PromptSession(
         key_bindings=bindings,
@@ -211,10 +243,27 @@ async def _interactive_tui(
         completer=completer,
     )
 
+    # 欢迎提示
+    tw = shutil.get_terminal_size().columns
+    if tw < 50:
+        console.print("[dim]输入问题开始对话，或输入 / 查看命令[/dim]")
+    else:
+        hint_items = ["输入问题开始思辨", "输入 / 使用命令", "↑↓ 浏览历史"]
+        console.print(f"[dim]{' · '.join(hint_items[:2]) + (' · ' + hint_items[2] if tw >= 60 else '')}[/dim]")
+    console.print()
+
     try:
         while True:
             try:
-                user_input = await session_ps.prompt_async("\n你 > ")
+                # 动态提示符 — 首次简洁提示，后续显示当前场景
+                cur_sc = getattr(engine, "_scenario", scenario)
+                if len(history) == 0:
+                    user_input = await session_ps.prompt_async("\n求是 ")
+                elif cur_sc != "general":
+                    scene_emoji = {"career": "💼", "relationship": "💕", "management": "📊"}.get(cur_sc, "")
+                    user_input = await session_ps.prompt_async(f"\n{scene_emoji} 你 ")
+                else:
+                    user_input = await session_ps.prompt_async("\n你 ")
             except (EOFError, KeyboardInterrupt):
                 console.print("\n[dim]👋 再见。思辨，然后行动。[/dim]")
                 break
@@ -251,9 +300,17 @@ async def _interactive_tui(
             if show_explain:
                 console.print(result.to_explain_text(user_input))
             elif show_think:
-                console.print(Panel(Markdown(result.full_text), border_style=BRAND_PRIMARY, padding=(1, 2)))
+                console.print(Panel(
+                    Markdown(result.full_text),
+                    border_style=BRAND_PRIMARY, padding=(1, 2),
+                    subtitle="[dim]求是思考[/dim]",
+                ))
             else:
-                console.print(Panel(Markdown(result.public_text), border_style=BRAND_SECONDARY, padding=(1, 2)))
+                console.print(Panel(
+                    Markdown(result.public_text),
+                    border_style=BRAND_SECONDARY, padding=(1, 2),
+                    subtitle="[dim]求是回答[/dim]",
+                ))
     finally:
         await engine.close()
 
@@ -270,9 +327,17 @@ async def _handle_slash_command(
     # ── /help ──
     if c == "/help":
         tw = shutil.get_terminal_size().columns
-        if tw < 60:
+        if tw < 50:
+            console.print(f"[bold {BRAND_PRIMARY}]求是 — 哲学思辨助手[/bold {BRAND_PRIMARY}]")
+            console.print("[bold]基础:[/bold] /help /new /clear /exit")
+            console.print("[bold]思辨:[/bold] /dialectic N? /council 2|3? /think /depth N")
+            console.print("[bold]工具:[/bold] /web? /profile /card /note /history /search /knowledge")
+            console.print("[dim]?后参数可选 · 继续输入直接对话[/dim]")
+        elif tw < 60:
             console.print(f"[bold {BRAND_PRIMARY}]求是 — 以哲学思辨为框架的 AI 思考伙伴[/bold {BRAND_PRIMARY}]")
-            console.print("[bold]命令:[/bold] /dialectic /council /web /profile /card /note /history /knowledge /think /depth /new /clear /exit")
+            console.print("[bold]基础[/bold] /help /new /clear /exit /quit")
+            console.print("[bold]思辨[/bold] /dialectic N? /council 2|3? /think /depth 1|2|3")
+            console.print("[bold]工具[/bold] /web? /profile /card /note /history N[/full? /search? /knowledge /personae")
             console.print("[dim]输入 /help 命令名 查看具体用法[/dim]")
         else:
             console.print(HELP_TEXT)
@@ -456,28 +521,141 @@ async def _handle_slash_command(
 
         return True, False, None, None
 
-    # ── /history [N] ──
+    # ── /history [N] [full|all] ──
     if c.startswith("/history"):
         parts = c.split()
-        n = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 10
+        show_full = "full" in parts or "all" in parts
+        n_parts = [p for p in parts[1:] if p.isdigit()]
+        n = int(n_parts[0]) if n_parts else 10
+        n = min(max(n, 1), 50)
         if not history:
             console.print("[dim]暂无对话历史[/dim]")
             return True, False, None, None
         recent = history[-n:]
         tw = shutil.get_terminal_size().columns
-        max_chars = 80 if tw < 80 else 120
-        console.print(f"[bold]最近 {len(recent)} 条对话：[/bold]")
-        for i, entry in enumerate(recent, 1):
-            role = entry.get("role", "user")
-            content = entry.get("content", "")[:max_chars]
-            icon = "👤" if role == "user" else "🧠"
-            console.print(f"  {icon} {content}")
+        if show_full:
+            # 完整模式 — 每条内容不截断
+            console.print(f"\n[bold {BRAND_PRIMARY}]══ 最近 {len(recent)} 条对话（完整）══[/bold {BRAND_PRIMARY}]\n")
+            for i, entry in enumerate(recent, 1):
+                role = entry.get("role", "user")
+                content = entry.get("content", "")
+                icon = "👤" if role == "user" else "🧠"
+                role_name = "你" if role == "user" else "求是"
+                console.print(Panel(
+                    content,
+                    title=f"[bold]{icon} {role_name} (#{i})[/bold]",
+                    border_style=BRAND_PRIMARY if role == "user" else BRAND_SECONDARY,
+                    padding=(1, 2),
+                ))
+                console.print()
+        else:
+            # 紧凑模式 — 预览
+            max_chars = 60 if tw < 60 else 120 if tw < 80 else 200
+            console.print(f"[bold]最近 {len(recent)} 条对话：[/bold]")
+            for i, entry in enumerate(recent, 1):
+                role = entry.get("role", "user")
+                content = entry.get("content", "")
+                icon = "👤" if role == "user" else "🧠"
+                if len(content) > max_chars:
+                    content = content[:max_chars] + f" [dim]...（共{len(entry.get('content',''))}字）[/dim]"
+                console.print(f"  {icon} {content}")
+            if tw >= 50:
+                console.print(f"[dim]提示: /history {n} full 查看完整内容[/dim]")
         return True, False, None, None
 
     # ── /version ──
     if c == "/version":
         from . import __version__
         console.print(f"[dim]求是 v{__version__}[/dim]")
+        return True, False, None, None
+
+    # ── /search <关键词> ──
+    if c.startswith("/search "):
+        query = cmd[8:].strip()
+        if not query:
+            console.print("[dim]用法: /search <关键词> — 在本地知识库中搜索[/dim]")
+            return True, False, None, None
+        with console.status(LOADING_PHASES["searching"][0], spinner=LOADING_PHASES["searching"][1]):
+            from .retriever import KnowledgeRetriever
+            kr = KnowledgeRetriever()
+            results = kr.search(query, top_k=5)
+        if not results:
+            msg = '[yellow]⚠ 本地知识库中未找到 "{}" 相关内容[/yellow]'.format(query)
+            console.print(msg)
+            console.print("[dim]提示: 试试 /web <关键词> 搜索网络，或 /knowledge add --path <路径> 添加本地知识[/dim]")
+            return True, False, None, None
+        tw = shutil.get_terminal_size().columns
+        console.print()
+        results_lines = []
+        for i, r in enumerate(results, 1):
+            content_preview = r.get("content", "")[:150 if tw < 80 else 200]
+            source = r.get("source", "")
+            score = r.get("score", 0)
+            results_lines.append(f"[bold {BRAND_INFO}]{i}. {content_preview}[/bold {BRAND_INFO}]")
+            if source:
+                results_lines.append(f"   [dim]📄 {source} (相关度: {score:.0%})[/dim]")
+            results_lines.append("")
+        console.print(Panel(
+            "\n".join(results_lines),
+            title=f"[bold]知识库搜索: {query}[/bold]",
+            border_style=BRAND_INFO,
+            padding=(1, 2),
+        ))
+        return True, False, None, None
+
+    if c == "/search":
+        console.print("[dim]用法: /search <关键词> — 在本地知识库中搜索[/dim]")
+        return True, False, None, None
+
+    # ── /personae ──
+    if c.startswith("/personae"):
+        parts = cmd.split(maxsplit=1)
+        subaction = parts[1].strip() if len(parts) >= 2 else ""
+        if subaction == "detail":
+            console.print(f"[bold {BRAND_PRIMARY}]哲学人格列表[/bold {BRAND_PRIMARY}]")
+            for name, style in PERSONA_STYLE.items():
+                desc_map = {
+                    "斯多葛": "关注可控与不可控的界限，倡导理性、克制和内在平静",
+                    "辩证唯物": "关注矛盾分析、实践检验、结构性视角",
+                    "存在主义": "关注自由选择、个体责任、意义的自我创造",
+                    "求是": "综合各流派精华，实事求是分析问题",
+                    "苏格拉底": "通过追问揭示问题本质，不预设答案",
+                }
+                console.print(f"  {style['emoji']} [bold {style['color']}]{name}[/bold {style['color']}] — [dim]{desc_map.get(name, '')}[/dim]")
+            return True, False, None, None
+        if not subaction:
+            console.print(f"[bold {BRAND_PRIMARY}]可用哲学人格[/bold {BRAND_PRIMARY}]")
+            tw = shutil.get_terminal_size().columns
+            names = list(PERSONA_STYLE.keys())
+            if tw < 50:
+                console.print("  " + " · ".join(names))
+            else:
+                for name in names:
+                    style = PERSONA_STYLE[name]
+                    console.print(f"  {style['emoji']} [{style['color']}]{name}[/{style['color']}]")
+            console.print("[dim]输入 /personae detail 查看详细介绍[/dim]")
+            return True, False, None, None
+
+    # ── /scenario <name> ──
+    if c.startswith("/scenario"):
+        parts = c.split(maxsplit=1)
+        new_scenario = parts[1].strip() if len(parts) >= 2 else ""
+        valid_scenarios = ["general", "career", "relationship", "management"]
+        if not new_scenario:
+            current_style = {"general": "🌐 通用", "career": "💼 职业", "relationship": "💕 关系", "management": "📊 管理"}
+            console.print(f"[bold {BRAND_PRIMARY}]场景切换[/bold {BRAND_PRIMARY}]")
+            for s in valid_scenarios:
+                marker = "►" if s == scenario else " "
+                color = BRAND_INFO if s == scenario else "dim"
+                console.print(f"  {marker} [{color}]{current_style.get(s, s)} ({s})[/]")
+            console.print(f"[dim]当前: {scenario} | 用法: /scenario <场景名>[/dim]")
+            return True, False, None, None
+        if new_scenario in valid_scenarios:
+            engine._scenario = new_scenario
+            name_map = {"general": "🌐 通用", "career": "💼 职业", "relationship": "💕 关系", "management": "📊 管理"}
+            console.print(f"[green]✅ 场景已切换至: {name_map.get(new_scenario, new_scenario)}[/green]")
+            return True, False, None, None
+        console.print(f"[dim]无效场景。可选: {', '.join(valid_scenarios)}[/dim]")
         return True, False, None, None
 
     # ── 未知 ──
@@ -628,8 +806,8 @@ async def _run_dialectic_tui(
             try:
                 user_response = await session_ps.prompt_async("\n你的回答 > ")
             except (EOFError, KeyboardInterrupt):
-                console.print("\n[dim]追问中断[/dim]")
-                return
+                console.print("\n[dim]追问已结束，正在整理已有思辨结果...[/dim]")
+                break
 
             session.history.append({"role": "user", "content": user_response})
             session.round = 2
@@ -654,8 +832,8 @@ async def _run_dialectic_tui(
             try:
                 user_response = await session_ps.prompt_async("\n你的回答 > ")
             except (EOFError, KeyboardInterrupt):
-                console.print("\n[dim]追问中断[/dim]")
-                return
+                console.print("\n[dim]追问已结束，正在整理已有思辨结果...[/dim]")
+                break
 
             session.history.append({"role": "user", "content": user_response})
             session.round += 1

@@ -44,7 +44,7 @@ HELP_TEXT = f"""
   /new             新对话
   /clear           清屏
   /exit /quit      退出
-
+ 
 [bold]思辨模式:[/bold]
   /dialectic <N> <问题>  苏格拉底追问链（N=1-5轮）
   /council <2|3> <问题>  多哲学人格辩论
@@ -53,21 +53,27 @@ HELP_TEXT = f"""
 
 [bold]搜索工具:[/bold]
   /web <关键词>       搜索最新资讯并纳入思辨分析
+  /search <关键词>    在知识库中搜索
 
 [bold]实用工具:[/bold]
   /profile           查看你的思维画像
+  /personae          管理哲学人格列表
   /card <关键词>      生成哲学思辨卡片
   /note <内容>       记录笔记
-  /history [N]       查看最近N条对话
+  /history [N]       查看最近N条对话摘要
+  /history N full    查看最近N条对话的完整内容
+  /knowledge         查看或管理知识库
 
 [dim]提示: 输入 /help <命令> 查看具体用法[/dim]
 """
 
 # ── 进度/阶段文案 ───────────────────────────────────────────────
 LOADING_PHASES = {
-    "thinking":    ("[bold #7C3AED]🧠 思辨中...[/bold #7C3AED]", "dots"),
+    "thinking":    ("[bold #7C3AED]🧠 分析中...[/bold #7C3AED]", "dots"),
     "searching":   ("[bold #3B82F6]🔍 搜索中...[/bold #3B82F6]", "earth"),
+    "search_wait": ("[bold #3B82F6]🌐 等待搜索结果...[/bold #3B82F6]", "dots12"),
     "debating":    ("[bold #F59E0B]⚡ 辩论中...[/bold #F59E0B]", "bounce"),
-    "summarizing": ("[bold #00D4AA]📝 总结中...[/bold #00D4AA]", "material"),
+    "summarizing": ("[bold #00D4AA]📝 撰写总结...[/bold #00D4AA]", "material"),
+    "generating":  ("[bold #7C3AED]✍️ 生成回复...[/bold #7C3AED]", "dots"),
     "loading":     ("[bold #7C3AED]⏳ 加载中...[/bold #7C3AED]", "dots"),
 }
