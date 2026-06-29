@@ -9,10 +9,9 @@ def test_help():
     """--help 应该列出所有子命令"""
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0
-    # typer 输出包含子命令名称
-    assert "ask" in result.stdout or "ask".upper() in result.stdout.upper()
-    assert "chat" in result.stdout or "chat".upper() in result.stdout.upper()
-    assert "knowledge" in result.stdout or "knowledge".upper() in result.stdout.upper()
+    assert "chat" in result.stdout
+    assert "init" in result.stdout
+    assert "profile" in result.stdout
 
 
 def test_version():
