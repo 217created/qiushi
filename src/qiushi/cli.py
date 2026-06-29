@@ -42,21 +42,25 @@ from .prompt_builder import PromptBuilder
 
 # ── TUI 模块 ────────────────────────────────────────────────────
 from .tui.constants import (
-    BRAND_PRIMARY, BRAND_SECONDARY, BRAND_ACCENT, BRAND_INFO,
-    WELCOME_BANNER, HELP_TEXT, LOADING_PHASES, get_persona_style,
+    BRAND_PRIMARY, BRAND_SECONDARY, BRAND_ACCENT, BRAND_INFO, BRAND_ERROR,
+    LOADING_PHASES, get_persona_style,
+    PERSONA_STYLE,
 )
+from .tui.commands import dispatch as dispatch_command
+from .tui.state import CommandContext
 from .tui.dialectic_renderer import (
     render_dialectic_round, render_dialectic_summary, render_dialectic_full,
     prompt_user,
 )
 from .tui.council_renderer import render_council_debate, render_council_summary
 from .tui.searcher import WebSearcher
+from .tui.renderers.welcome_renderer import WelcomeRenderer
 
 logger = logging.getLogger(__name__)
 
 # ── 全局 ─────────────────────────────────────────────────────────
 console = Console(highlight=False)
-app = typer.Typer(name="qiushi", help="求是 — 以哲学思辨为框架的 AI 思考伙伴", no_args_is_help=True)
+app = typer.Typer(name="qiushi", help="求是 — 以哲学思辨为框架的 AI 思考伙伴", no_args_is_help=False)
 HISTORY_FILE = os.path.expanduser("~/.qiushi_history")
 
 
@@ -67,9 +71,21 @@ def _version_callback(value: bool):
         raise typer.Exit()
 
 
-@app.callback()
-def _main(version: bool = typer.Option(False, "--version", "-v", help="显示版本号", callback=_version_callback)):
-    pass
+@app.callback(invoke_without_command=True)
+def _main(
+    version: bool = typer.Option(False, "--version", "-v", help="显示版本号", callback=_version_callback),
+    ctx: typer.Context = typer.Context,
+):
+    if ctx.invoked_subcommand is None:
+        # 无子命令 → 直接进交互模式
+        config = QiushiConfig.load()
+        if not config.get_effective_api_key() and config.llm.provider != "ollama":
+            console.print(f"[dim]⚠  尚未配置 API Key。运行 [bold]qiushi init[/bold] 初始化，或设置 {config.llm.provider.upper()}_API_KEY 环境变量。[/dim]")
+            console.print("[dim]提示: 支持 DeepSeek / OpenAI / Anthropic / Ollama (本地)[/dim]")
+            raise typer.Exit(1)
+        vault = config.obsidian_vault or _detect_obsidian_vault()
+        sid = str(uuid.uuid4())[:8]
+        asyncio.run(_interactive_tui(sid, config, vault, 2, False, False, "general"))
 
 
 def _detect_obsidian_vault() -> str | None:
@@ -170,7 +186,7 @@ async def _interactive_tui(
 ):
     """完整的交互式 TUI"""
     console.clear()
-    console.print(_make_banner_terminal())
+    WelcomeRenderer(console).render()
 
     engine = QiuShiEngine(config=config, obsidian_vault=vault)
     await engine.__aenter__()
@@ -181,6 +197,7 @@ async def _interactive_tui(
     show_think = think
     show_explain = explain
     searcher = WebSearcher()
+    just_answered = False  # PR #4: AI 刚回复完，显示沉思符号
 
     # ── 键盘绑定 ──
     bindings = KeyBindings()
@@ -204,7 +221,7 @@ async def _interactive_tui(
     completion_words = [
         "/help", "/new", "/clear", "/exit", "/quit",
         "/think", "/depth 1", "/depth 2", "/depth 3",
-        "/web", "/search", "/profile", "/card", "/note",
+        "/web", "/search", "/profile", "/card", "/note", "/done",
         "/dialectic 2 ", "/dialectic 3 ",
         "/council 2 ", "/council 3 ",
         "/history", "/personae", "/knowledge", "/scenario",
@@ -225,6 +242,7 @@ async def _interactive_tui(
         "/profile": "查看/编辑用户画像",
         "/card": "生成知识卡片",
         "/note": "添加笔记到 Obsidian",
+        "/done": "标记决策已执行",
         "/dialectic 2 ": "苏格拉底追问 (2轮)",
         "/dialectic 3 ": "苏格拉底追问 (3轮)",
         "/council 2 ": "多人格辩论 (2名哲人)",
@@ -243,27 +261,27 @@ async def _interactive_tui(
         completer=completer,
     )
 
-    # 欢迎提示
-    tw = shutil.get_terminal_size().columns
-    if tw < 50:
-        console.print("[dim]输入问题开始对话，或输入 / 查看命令[/dim]")
-    else:
-        hint_items = ["输入问题开始思辨", "输入 / 使用命令", "↑↓ 浏览历史"]
-        console.print(f"[dim]{' · '.join(hint_items[:2]) + (' · ' + hint_items[2] if tw >= 60 else '')}[/dim]")
-    console.print()
+    # 欢迎提示由 WelcomeRenderer 渲染，此处不再重复
+
+    # ── 持久上下文 ──
+    ctx = CommandContext(
+        console=console, engine=engine, sid=sid,
+        history=history, searcher=searcher,
+        depth=current_depth, show_think=show_think,
+        show_explain=show_explain, scenario=scenario,
+    )
 
     try:
         while True:
             try:
-                # 动态提示符 — 首次简洁提示，后续显示当前场景
-                cur_sc = getattr(engine, "_scenario", scenario)
-                if len(history) == 0:
-                    user_input = await session_ps.prompt_async("\n求是 ")
-                elif cur_sc != "general":
-                    scene_emoji = {"career": "💼", "relationship": "💕", "management": "📊"}.get(cur_sc, "")
-                    user_input = await session_ps.prompt_async(f"\n{scene_emoji} 你 ")
+                # 动态提示符
+                if just_answered:
+                    user_input = await session_ps.prompt_async("\n· 求是 > ")
+                    just_answered = False
+                elif ctx.pending_council_personae:
+                    user_input = await session_ps.prompt_async("\n🏛️ 辩论问题 > ")
                 else:
-                    user_input = await session_ps.prompt_async("\n你 ")
+                    user_input = await session_ps.prompt_async("\n你：")
             except (EOFError, KeyboardInterrupt):
                 console.print("\n[dim]👋 再见。思辨，然后行动。[/dim]")
                 break
@@ -272,17 +290,23 @@ async def _interactive_tui(
             if not user_input:
                 continue
 
+            # ── 两步辩论 ──
+            if ctx.pending_council_personae and not user_input.startswith("/"):
+                console.print()
+                await _run_council_tui(
+                    ctx.engine, ctx.sid, user_input, len(ctx.pending_council_personae),
+                    ctx.depth, ctx.show_think, personae=ctx.pending_council_personae,
+                )
+                ctx.pending_council_personae = None
+                just_answered = True
+                continue
+
             # ── 斜杠命令 ──
             if user_input.startswith("/"):
-                handled, should_exit, new_depth, new_think = await _handle_slash_command(
-                    user_input, engine, sid, history,
-                    current_depth, show_think, show_explain, scenario,
-                    searcher, config, vault, session_ps,
-                )
-                if new_depth is not None:
-                    current_depth = new_depth
-                if new_think is not None:
-                    show_think = new_think
+                handled, should_exit = await dispatch_command(user_input, ctx)
+                current_depth = ctx.depth
+                show_think = ctx.show_think
+                show_explain = ctx.show_explain
                 if should_exit:
                     break
                 if handled:
@@ -294,415 +318,107 @@ async def _interactive_tui(
                 history = history[-50:]
 
             console.print()
-            with console.status(LOADING_PHASES["thinking"][0], spinner=LOADING_PHASES["thinking"][1]):
-                result = await engine.process_with_result(sid, user_input, depth=current_depth)
+            await _stream_answer(engine, sid, user_input, current_depth, show_explain, show_think)
+            just_answered = True  # PR #4: 下次提示符显示沉思符号
 
-            if show_explain:
-                console.print(result.to_explain_text(user_input))
-            elif show_think:
-                console.print(Panel(
-                    Markdown(result.full_text),
-                    border_style=BRAND_PRIMARY, padding=(1, 2),
-                    subtitle="[dim]求是思考[/dim]",
-                ))
-            else:
-                console.print(Panel(
-                    Markdown(result.public_text),
-                    border_style=BRAND_SECONDARY, padding=(1, 2),
-                    subtitle="[dim]求是回答[/dim]",
-                ))
+            # PR #5: 折叠指示器
+            if len(history) > 6:
+                tw = shutil.get_terminal_size().columns
+                folded = (len(history) - 4) // 2
+                console.print(f"[dim]─{'─' * (min(tw, 60) - 8)} ▲ {folded} 轮思辨折叠  /history 查看[/dim]")
     finally:
         await engine.close()
 
 
-async def _handle_slash_command(
-    cmd: str, engine, sid, history, depth, think, explain, scenario,
-    searcher, config, vault, session_ps,
-) -> tuple[bool, bool, int | None, bool | None]:
-    """处理斜杠命令。返回 (handled, should_exit, new_depth, new_think)"""
-    c = cmd.strip().lower()
-    new_depth: int | None = None
-    new_think: bool | None = None
-
-    # ── /help ──
-    if c == "/help":
-        tw = shutil.get_terminal_size().columns
-        if tw < 50:
-            console.print(f"[bold {BRAND_PRIMARY}]求是 — 哲学思辨助手[/bold {BRAND_PRIMARY}]")
-            console.print("[bold]基础:[/bold] /help /new /clear /exit")
-            console.print("[bold]思辨:[/bold] /dialectic N? /council 2|3? /think /depth N")
-            console.print("[bold]工具:[/bold] /web? /profile /card /note /history /search /knowledge")
-            console.print("[dim]?后参数可选 · 继续输入直接对话[/dim]")
-        elif tw < 60:
-            console.print(f"[bold {BRAND_PRIMARY}]求是 — 以哲学思辨为框架的 AI 思考伙伴[/bold {BRAND_PRIMARY}]")
-            console.print("[bold]基础[/bold] /help /new /clear /exit /quit")
-            console.print("[bold]思辨[/bold] /dialectic N? /council 2|3? /think /depth 1|2|3")
-            console.print("[bold]工具[/bold] /web? /profile /card /note /history N[/full? /search? /knowledge /personae")
-            console.print("[dim]输入 /help 命令名 查看具体用法[/dim]")
-        else:
-            console.print(HELP_TEXT)
-        return True, False, None, None
-
-    # ── /new ──
-    if c == "/new":
-        history.clear()
-        console.print(f"[dim]🔄 新对话，历史已清空[/dim]")
-        return True, False, None, None
-
-    # ── /clear ──
-    if c == "/clear":
-        console.clear()
-        console.print(_make_banner_terminal())
-        return True, False, None, None
-
-    # ── /exit /quit ──
-    if c in ("/exit", "/quit"):
-        return True, True, None, None
-
-    # ── /think ──
-    if c == "/think":
-        new_think = not think
-        console.print(f"[dim]{'✅ 显示完整推理' if new_think else '✅ 仅显示结论'}[/dim]")
-        return True, False, None, new_think
-
-    # ── /depth N ──
-    if c.startswith("/depth"):
-        parts = c.split()
-        if len(parts) >= 2 and parts[1].isdigit():
-            d = int(parts[1])
-            if 1 <= d <= 3:
-                new_depth = d
-                console.print(f"[dim]🧠 深度 → {d} ({['快速','标准','深度'][d-1]})[/dim]")
-                return True, False, new_depth, None
-        console.print(f"[dim]用法: /depth 1|2|3 (当前: {depth})[/dim]")
-        return True, False, None, None
-
-    # ── /web <query> ──
-    if c.startswith("/web "):
-        query = cmd[5:].strip()
-        if not query:
-            console.print("[dim]用法: /web <搜索关键词>[/dim]")
-            return True, False, None, None
-
-        with console.status(LOADING_PHASES["searching"][0], spinner=LOADING_PHASES["searching"][1]):
-            search_results = await searcher.search(query)
-            context = searcher.format_context(search_results)
-
-        if not search_results or len(search_results) == 0:
-            console.print("[yellow]⚠ 未搜索到结果[/yellow]")
-            return True, False, None, None
-
-        # 自适应搜索结果
-        tw = shutil.get_terminal_size().columns
-        console.print()
-        results_panel = []
-        for i, r in enumerate(search_results, 1):
-            title = r.get("title", "")
-            body = r.get("body", "")[:100 if tw < 80 else 150]
-            href = r.get("href", "")
-            results_panel.append(f"[bold {BRAND_INFO}]{i}. {title}[/bold {BRAND_INFO}]")
-            if body:
-                results_panel.append(f"   [dim]{body}[/dim]")
-            if href and tw >= 60:
-                results_panel.append(f"   [link={href}]{href}[/link]")
-            results_panel.append("")
-
-        console.print(Panel(
-            "\n".join(results_panel),
-            title="[bold]搜索结果[/bold]",
-            border_style=BRAND_INFO,
-            padding=(1, 2),
-        ))
-
-        # 搜索+思辨
-        combined_query = f"{query}\n\n以下是相关搜索结果：\n{context}\n\n请基于以上信息进行分析。"
-        history.append({"role": "user", "content": combined_query})
-        if len(history) > 50:
-            history = history[-50:]
-
-        with console.status(LOADING_PHASES["thinking"][0], spinner=LOADING_PHASES["thinking"][1]):
-            result = await engine.process_with_result(sid, combined_query, depth=depth)
-
-        console.print(Panel(
-            Markdown(result.public_text),
-            title=f"[bold {BRAND_PRIMARY}]求是分析[/bold {BRAND_PRIMARY}]",
-            border_style=BRAND_PRIMARY,
-            padding=(1, 2),
-        ))
-        return True, False, None, None
-
-    # ── /dialectic N <问题> ──
-    if c.startswith("/dialectic"):
-        parts = cmd.split(maxsplit=2)
-        rounds = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 2
-        question = parts[2] if len(parts) >= 3 else ""
-        if not question:
-            console.print("[dim]用法: /dialectic <轮数> <问题>[/dim]")
-            console.print("[dim]例如: /dialectic 3 该不该辞职[/dim]")
-            return True, False, None, None
-        rounds = min(max(rounds, 1), 5)
-        await _run_dialectic_tui(engine, sid, question, rounds, depth, session_ps)
-        return True, False, None, None
-
-    # ── /council N <问题> ──
-    if c.startswith("/council"):
-        parts = cmd.split(maxsplit=2)
-        members = int(parts[1]) if len(parts) >= 2 and parts[1].isdigit() else 2
-        question = parts[2] if len(parts) >= 3 else ""
-        if not question:
-            console.print("[dim]用法: /council <2|3> <问题>[/dim]")
-            console.print("[dim]例如: /council 3 努力重要还是选择重要[/dim]")
-            return True, False, None, None
-        members = min(max(members, 2), 3)
-        await _run_council_tui(engine, sid, question, members, depth, think)
-        return True, False, None, None
-
-    # ── /profile ──
-    if c == "/profile":
-        await _run_profile()
-        return True, False, None, None
-
-    # ── /card <keyword> ──
-    if c.startswith("/card"):
-        keyword = cmd[6:].strip() if len(cmd) > 5 else ""
-        await _run_card(keyword)
-        return True, False, None, None
-
-    # ── /note <content> ──
-    if c.startswith("/note "):
-        content = cmd[6:].strip()
-        if content:
-            write_note(content)
-            console.print(f"[green]✅ 笔记已保存[/green]")
-        else:
-            console.print("[dim]用法: /note <内容>[/dim]")
-        return True, False, None, None
-
-    # ── /knowledge <action> [--path PATH] ──
-    if c.startswith("/knowledge"):
-        parts = c.split(maxsplit=2)
-        action = parts[1] if len(parts) >= 2 else ""
-        if not action or action not in ("add", "list", "reload"):
-            console.print(f"[bold {BRAND_PRIMARY}]知识库管理[/bold {BRAND_PRIMARY}]")
-            console.print("  /knowledge list        列出已加载的知识")
-            console.print("  /knowledge reload      重新加载知识库")
-            console.print(f"[dim]  或使用 CLI: qiushi knowledge add --path <路径>[/dim]")
-            return True, False, None, None
-
-        from pathlib import Path as _Path
-        if action == "list":
-            if not USER_KNOWLEDGE_DIR.exists():
-                console.print("[dim]用户知识库为空[/dim]")
-            else:
-                from rich.table import Table as _Table
-                from rich import box as _box
-                t = _Table(box=_box.SIMPLE, header_style=f"bold {BRAND_PRIMARY}")
-                t.add_column("目录/文件")
-                t.add_column("段落")
-                total = 0
-                for subdir in sorted(USER_KNOWLEDGE_DIR.iterdir()):
-                    if subdir.is_dir():
-                        for f in sorted(subdir.glob("*.md")):
-                            paras = len(f.read_text(encoding="utf-8").split("\n\n"))
-                            total += paras
-                            t.add_row(f"  {subdir.name}/{f.name}", str(paras))
-                t.add_row(f"[bold]合计[/bold]", str(total))
-                console.print(t)
-
-        elif action == "reload":
-            from .retriever import KnowledgeRetriever
-            kr = KnowledgeRetriever()
-            kr.reload()
-            console.print("[green]✅ 知识库已重新加载[/green]")
-
-        elif action == "add":
-            # /knowledge add 需要路径参数，通过 CLI 更方便
-            console.print(f"[dim]请使用命令行: qiushi knowledge add --path <路径>[/dim]")
-
-        return True, False, None, None
-
-    # ── /history [N] [full|all] ──
-    if c.startswith("/history"):
-        parts = c.split()
-        show_full = "full" in parts or "all" in parts
-        n_parts = [p for p in parts[1:] if p.isdigit()]
-        n = int(n_parts[0]) if n_parts else 10
-        n = min(max(n, 1), 50)
-        if not history:
-            console.print("[dim]暂无对话历史[/dim]")
-            return True, False, None, None
-        recent = history[-n:]
-        tw = shutil.get_terminal_size().columns
-        if show_full:
-            # 完整模式 — 每条内容不截断
-            console.print(f"\n[bold {BRAND_PRIMARY}]══ 最近 {len(recent)} 条对话（完整）══[/bold {BRAND_PRIMARY}]\n")
-            for i, entry in enumerate(recent, 1):
-                role = entry.get("role", "user")
-                content = entry.get("content", "")
-                icon = "👤" if role == "user" else "🧠"
-                role_name = "你" if role == "user" else "求是"
-                console.print(Panel(
-                    content,
-                    title=f"[bold]{icon} {role_name} (#{i})[/bold]",
-                    border_style=BRAND_PRIMARY if role == "user" else BRAND_SECONDARY,
-                    padding=(1, 2),
-                ))
-                console.print()
-        else:
-            # 紧凑模式 — 预览
-            max_chars = 60 if tw < 60 else 120 if tw < 80 else 200
-            console.print(f"[bold]最近 {len(recent)} 条对话：[/bold]")
-            for i, entry in enumerate(recent, 1):
-                role = entry.get("role", "user")
-                content = entry.get("content", "")
-                icon = "👤" if role == "user" else "🧠"
-                if len(content) > max_chars:
-                    content = content[:max_chars] + f" [dim]...（共{len(entry.get('content',''))}字）[/dim]"
-                console.print(f"  {icon} {content}")
-            if tw >= 50:
-                console.print(f"[dim]提示: /history {n} full 查看完整内容[/dim]")
-        return True, False, None, None
-
-    # ── /version ──
-    if c == "/version":
-        from . import __version__
-        console.print(f"[dim]求是 v{__version__}[/dim]")
-        return True, False, None, None
-
-    # ── /search <关键词> ──
-    if c.startswith("/search "):
-        query = cmd[8:].strip()
-        if not query:
-            console.print("[dim]用法: /search <关键词> — 在本地知识库中搜索[/dim]")
-            return True, False, None, None
-        with console.status(LOADING_PHASES["searching"][0], spinner=LOADING_PHASES["searching"][1]):
-            from .retriever import KnowledgeRetriever
-            kr = KnowledgeRetriever()
-            results = kr.search(query, top_k=5)
-        if not results:
-            msg = '[yellow]⚠ 本地知识库中未找到 "{}" 相关内容[/yellow]'.format(query)
-            console.print(msg)
-            console.print("[dim]提示: 试试 /web <关键词> 搜索网络，或 /knowledge add --path <路径> 添加本地知识[/dim]")
-            return True, False, None, None
-        tw = shutil.get_terminal_size().columns
-        console.print()
-        results_lines = []
-        for i, r in enumerate(results, 1):
-            content_preview = r.get("content", "")[:150 if tw < 80 else 200]
-            source = r.get("source", "")
-            score = r.get("score", 0)
-            results_lines.append(f"[bold {BRAND_INFO}]{i}. {content_preview}[/bold {BRAND_INFO}]")
-            if source:
-                results_lines.append(f"   [dim]📄 {source} (相关度: {score:.0%})[/dim]")
-            results_lines.append("")
-        console.print(Panel(
-            "\n".join(results_lines),
-            title=f"[bold]知识库搜索: {query}[/bold]",
-            border_style=BRAND_INFO,
-            padding=(1, 2),
-        ))
-        return True, False, None, None
-
-    if c == "/search":
-        console.print("[dim]用法: /search <关键词> — 在本地知识库中搜索[/dim]")
-        return True, False, None, None
-
-    # ── /personae ──
-    if c.startswith("/personae"):
-        parts = cmd.split(maxsplit=1)
-        subaction = parts[1].strip() if len(parts) >= 2 else ""
-        if subaction == "detail":
-            console.print(f"[bold {BRAND_PRIMARY}]哲学人格列表[/bold {BRAND_PRIMARY}]")
-            for name, style in PERSONA_STYLE.items():
-                desc_map = {
-                    "斯多葛": "关注可控与不可控的界限，倡导理性、克制和内在平静",
-                    "辩证唯物": "关注矛盾分析、实践检验、结构性视角",
-                    "存在主义": "关注自由选择、个体责任、意义的自我创造",
-                    "求是": "综合各流派精华，实事求是分析问题",
-                    "苏格拉底": "通过追问揭示问题本质，不预设答案",
-                }
-                console.print(f"  {style['emoji']} [bold {style['color']}]{name}[/bold {style['color']}] — [dim]{desc_map.get(name, '')}[/dim]")
-            return True, False, None, None
-        if not subaction:
-            console.print(f"[bold {BRAND_PRIMARY}]可用哲学人格[/bold {BRAND_PRIMARY}]")
-            tw = shutil.get_terminal_size().columns
-            names = list(PERSONA_STYLE.keys())
-            if tw < 50:
-                console.print("  " + " · ".join(names))
-            else:
-                for name in names:
-                    style = PERSONA_STYLE[name]
-                    console.print(f"  {style['emoji']} [{style['color']}]{name}[/{style['color']}]")
-            console.print("[dim]输入 /personae detail 查看详细介绍[/dim]")
-            return True, False, None, None
-
-    # ── /scenario <name> ──
-    if c.startswith("/scenario"):
-        parts = c.split(maxsplit=1)
-        new_scenario = parts[1].strip() if len(parts) >= 2 else ""
-        valid_scenarios = ["general", "career", "relationship", "management"]
-        if not new_scenario:
-            current_style = {"general": "🌐 通用", "career": "💼 职业", "relationship": "💕 关系", "management": "📊 管理"}
-            console.print(f"[bold {BRAND_PRIMARY}]场景切换[/bold {BRAND_PRIMARY}]")
-            for s in valid_scenarios:
-                marker = "►" if s == scenario else " "
-                color = BRAND_INFO if s == scenario else "dim"
-                console.print(f"  {marker} [{color}]{current_style.get(s, s)} ({s})[/]")
-            console.print(f"[dim]当前: {scenario} | 用法: /scenario <场景名>[/dim]")
-            return True, False, None, None
-        if new_scenario in valid_scenarios:
-            engine._scenario = new_scenario
-            name_map = {"general": "🌐 通用", "career": "💼 职业", "relationship": "💕 关系", "management": "📊 管理"}
-            console.print(f"[green]✅ 场景已切换至: {name_map.get(new_scenario, new_scenario)}[/green]")
-            return True, False, None, None
-        console.print(f"[dim]无效场景。可选: {', '.join(valid_scenarios)}[/dim]")
-        return True, False, None, None
-
-    # ── 未知 ──
-    if c.startswith("/"):
-        console.print(f"[dim]未知命令: {c} (输入 /help 查看帮助)[/dim]")
-        return True, False, None, None
-
-    return False, False, None, None
-
-
-# ═══════════════════════════════════════════════════════════════════
-#  ask 命令（带 TUI）
-# ═══════════════════════════════════════════════════════════════════
-
-@app.command()
-def ask(
-    message: str | None = typer.Argument(None, help="问题文本"),
-    input_file: str | None = typer.Option(None, "--input", "-i", help="从文件读取问题"),
-    output_file: str | None = typer.Option(None, "--output", "-o", help="将回答写入文件"),
-    session: str | None = typer.Option(None, "--session", "-s", help="会话 ID"),
-    depth: int = typer.Option(2, "--depth", "-d", help="分析深度 1-3"),
-    think: bool = typer.Option(False, "--think", "-t", help="显示完整推理过程"),
-    explain: bool = typer.Option(False, "--explain", "-e", help="展示内部决策信息"),
-    dialectic: int | None = typer.Option(None, "--dialectic", help="苏格拉底追问轮数 (1-5)"),
-    council: int | None = typer.Option(None, "--council", help="多哲学人格辩论 (2-3)"),
-    web: str | None = typer.Option(None, "--web", "-w", help="搜索最新资讯后再分析"),
-    output_format: str = typer.Option("text", "--format", "-f", help="text / json"),
-    scenario: str = typer.Option("general", "--scenario", "-c", help="场景"),
+async def _stream_answer(
+    engine: QiuShiEngine, sid: str, question: str,
+    depth: int, show_explain: bool, show_think: bool,
 ):
-    """单次问答（带 TUI 效果）"""
-    _confirm_api()
+    """流式输出 — 轻量逐字打印，句末停顿，不重复渲染"""
+    from .tui.constants import SENTENCE_PAUSE, SENTENCE_ENDS, BRAND_PRIMARY, BRAND_SECONDARY
+    from rich.panel import Panel
+    from rich.markdown import Markdown
 
-    if input_file:
-        question = Path(input_file).read_text(encoding="utf-8").strip()
-    elif message:
-        question = message
-    else:
-        raise typer.BadParameter("请提供问题文本或使用 --input 指定文件")
+    # ── explain 模式：直接用 process_with_result ──
+    if show_explain:
+        with console.status("🧠 分析中", spinner="dots"):
+            result = await engine.process_with_result(sid, question, depth=depth)
+        console.print(result.to_explain_text(question))
+        return
 
-    config = QiushiConfig.load()
-    vault = config.obsidian_vault or _detect_obsidian_vault()
-    sid = session or str(uuid.uuid4())[:8]
+    # ── think 模式 ──
+    if show_think:
+        with console.status("🧠 思考中", spinner="dots"):
+            result = await engine.process_with_result(sid, question, depth=depth)
+        # 展示思考依据（纯文本） + 完整三段（上色）
+        from rich.text import Text as RichText
+        explain = result.to_explain_text(question)
+        explain_lines = explain.split("\n")
+        cut = None
+        for i, line in enumerate(explain_lines):
+            if line.strip() == "══ 回答 ══":
+                cut = i
+                break
+        header_lines = explain_lines[:cut] if cut is not None else explain_lines[:-1]
+        header = "\n".join(header_lines)
 
-    asyncio.run(
-        _ask_tui(question, sid, config, vault, depth, think, explain,
-                 dialectic, council, web, output_file, output_format, scenario)
-    )
+        # 三段上色
+        full = result.full_text
+        section_colors = {"main": "#7B8B9B", "rebuttal": "#B8846B", "summary": "#6B5B7B"}
+        colored = RichText()
+        current_section = "main"
+        buf = ""
+        for ch in full:
+            buf += ch
+            if ch == "】":
+                if "【分析】" in buf[-6:]:
+                    current_section = "main"
+                elif "【反思】" in buf[-6:]:
+                    current_section = "rebuttal"
+                elif "【总结】" in buf[-6:]:
+                    current_section = "summary"
+                colored.append(ch, style="grey50")
+            else:
+                colored.append(ch, style=section_colors.get(current_section, "#7B8B9B"))
+
+        # 合并：诊断信息 + 上色三段
+        combined = RichText(header + "\n\n══ 回答 ══\n")
+        combined.append_text(colored)
+        console.print(Panel(combined, border_style=BRAND_PRIMARY, padding=(1, 2),
+                            title="[bold]🧠 完整推理[/bold]"))
+        return
+
+        # ── 常规模式：只显示分析+总结（隐藏推理） ──
+    full = ""
+    from rich.text import Text as RichText
+
+    with console.status("🧠 思考中", spinner="dots") as _s:
+        async for token in engine.process_stream(sid, question, depth=depth):
+            full += token
+
+    from .analyzer import parse_sections
+    sec = parse_sections(full)
+    main_text = sec.get("main", full)
+    summary_text = sec.get("summary", "")
+    public_parts = [p for p in [main_text, summary_text] if p]
+    public_full = "\n\n".join(public_parts) or full
+
+    section_colors = {"main": "#7B8B9B", "summary": "#6B5B7B"}
+    colored = RichText()
+    current_section = "main"
+    buf = ""
+    for ch in public_full:
+        buf += ch
+        if ch == "】":
+            if "【分析】" in buf[-6:]:
+                current_section = "main"
+            elif "【总结】" in buf[-6:]:
+                current_section = "summary"
+            colored.append(ch, style="grey50")
+        else:
+            colored.append(ch, style=section_colors.get(current_section, "#7B8B9B"))
+
+    console.print(Panel(colored, border_style=BRAND_PRIMARY, padding=(1, 2)))
 
 
 async def _ask_tui(
@@ -850,21 +566,24 @@ async def _run_dialectic_tui(
 async def _run_council_tui(
     engine: QiuShiEngine, sid: str, question: str,
     members: int, depth: int, think: bool,
+    personae: list[tuple[str, str]] | None = None,
 ):
     """多哲学人格辩论，带 TUI 动画"""
-    councils = {
-        2: [
-            ("斯多葛", "你是一个斯多葛主义者。关注可控与不可控的界限，倡导理性、克制和内在平静。"),
-            ("辩证唯物", "你是一个辩证唯物主义者。关注矛盾分析、实践检验、结构性视角。"),
-        ],
-        3: [
-            ("斯多葛", "你是一个斯多葛主义者。关注可控与不可控的界限，倡导理性、克制和内在平静。"),
-            ("辩证唯物", "你是一个辩证唯物主义者。关注矛盾分析、实践检验、结构性视角。"),
-            ("存在主义", "你是一个存在主义者。关注自由选择、个体责任、意义的自我创造。"),
-        ],
-    }
-
-    pairs = councils.get(members, councils[2])
+    if personae:
+        pairs = personae
+    else:
+        councils = {
+            2: [
+                ("斯多葛", "你是一个斯多葛主义者。关注可控与不可控的界限，倡导理性、克制和内在平静。"),
+                ("辩证唯物", "你是一个辩证唯物主义者。关注矛盾分析、实践检验、结构性视角。"),
+            ],
+            3: [
+                ("斯多葛", "你是一个斯多葛主义者。关注可控与不可控的界限，倡导理性、克制和内在平静。"),
+                ("辩证唯物", "你是一个辩证唯物主义者。关注矛盾分析、实践检验、结构性视角。"),
+                ("存在主义", "你是一个存在主义者。关注自由选择、个体责任、意义的自我创造。"),
+            ],
+        }
+        pairs = councils.get(members, councils[2])
     console.print(f"\n[bold {BRAND_PRIMARY}]══ 多哲学人格辩论（{members}人）══[/bold {BRAND_PRIMARY}]\n")
 
     async def _call_councillor(name: str, persona: str) -> dict:
@@ -1251,7 +970,7 @@ def init():
 
     config.save()
     typer.echo(f"\n✅ 配置已保存到 {CONFIG_PATH}")
-    console.print(_make_banner_terminal())
+    WelcomeRenderer(console).render()
 
 
 if __name__ == "__main__":

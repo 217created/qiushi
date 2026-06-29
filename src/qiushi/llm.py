@@ -35,18 +35,19 @@ class LLMClient(ABC):
 
 def create_llm(config: QiushiConfig) -> LLMClient:
     provider = config.llm.provider
-    try:
-        import litellm  # noqa: F401
-        return _LiteLLMClient(config)
-    except ImportError:
-        pass
+    # 优先使用原生客户端（无额外网络请求，启动快）
     if provider == "deepseek":
         return _DeepSeekClient(config)
     if provider == "ollama":
         return _OllamaClient()
-    raise LLMError(
-        f"不支持的内置 provider: {provider}。请安装 litellm: pip install 'qiushi[all]'"
-    )
+    # 其他 provider → 尝试 litellm（可能触发远程下载）
+    try:
+        import litellm  # noqa: F401
+        return _LiteLLMClient(config)
+    except ImportError:
+        raise LLMError(
+            f"不支持的 provider: {provider}。请安装 litellm: pip install 'qiushi[all]'"
+        )
 
 
 # ── LiteLLM 实现 ─────────────────────────────────────────────────

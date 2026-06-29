@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-# ── 品牌色 ───────────────────────────────────────────────────────
-BRAND_PRIMARY = "#7C3AED"   # 靛紫 — 哲学/思辨感
-BRAND_SECONDARY = "#00D4AA"  # 青绿 — 自然/清晰
-BRAND_ACCENT = "#F59E0B"    # 琥珀 — 洞察/亮点
-BRAND_ERROR = "#EF4444"     # 红
-BRAND_SUCCESS = "#10B981"   # 绿
-BRAND_INFO = "#3B82F6"     # 蓝
+# ── 品牌色（低饱和度暖灰石色系）────────────────────────────────
+BRAND_PRIMARY = "#6B5B7B"    # 石墨紫 — 沉稳，哲学感
+BRAND_SECONDARY = "#7B8B7B"  # 鼠尾草绿 — 柔和自然
+BRAND_ACCENT = "#B8846B"    # 陶土 — 温暖不扎眼
+BRAND_ERROR = "#C46B6B"     # 哑光红
+BRAND_SUCCESS = "#7B9B7B"   # 哑光绿
+BRAND_INFO = "#7B8B9B"      # 灰蓝
 
 # ── 身份标识（哲学人格） ─────────────────────────────────────────
 PERSONA_STYLE = {
@@ -66,6 +66,20 @@ HELP_TEXT = f"""
 
 [dim]提示: 输入 /help <命令> 查看具体用法[/dim]
 """
+
+# ── 流式输出（PR #2） ──────────────────────────────────────────
+STREAM_SPEED = 0.025        # 秒/字符 — 适配中文阅读速度
+SENTENCE_PAUSE = 0.35       # 句末停顿（秒），模拟"思辨换气"
+SENTENCE_ENDS = set("。！？.!?\n")
+REFRESH_RATE = 30            # 刷新率（fps）
+
+# ── 逻辑语义样式（PR #3） ──────────────────────────────────────
+LOGIC_STYLES = {
+    "analysis": "#7B8B9B",    # 【分析】— 灰蓝，理性平实
+    "rebuttal": "#B8846B",    # 【反思】— 陶土，温暖但有分量
+    "summary": "#6B5B7B",     # 【总结】— 石墨紫，与品牌色一致
+    "quote": "grey50",        # 知识引用 — 灰斜体
+}
 
 # ── 进度/阶段文案 ───────────────────────────────────────────────
 LOADING_PHASES = {

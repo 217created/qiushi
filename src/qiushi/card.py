@@ -28,29 +28,15 @@ def generate_card(keyword: str = "") -> str:
     title = main.get("title", "思辨卡片")
     content = main.get("content", "")[:200]
 
-    # 构建卡片
+    # 构建卡片（纯文本，边框由 cli.py 的 Panel 处理）
     lines = [
-        "┌" + "─" * 48 + "┐",
-        f"│  {'思辨卡片':^44}  │",
-        "│" + " " * 48 + "│",
+        f"**{title}**",
+        "",
+        f"> {content}",
+        "",
+        f"💭 {_generate_reflection(title, keyword)}",
     ]
 
-    # 内容换行
-    words = content
-    for i in range(0, len(words), 38):
-        chunk = words[i:i+38]
-        lines.append(f"│  {chunk:<46}│")
-
-    lines.append("│" + " " * 48 + "│")
-    lines.append(f"│  —— 摘自《{title}》{'':>30}│")
-    lines.append("│" + " " * 48 + "│")
-
-    # 反问句
-    question = _generate_reflection(title, keyword)
-    lines.append(f"│  💭 {question:<44}│")
-    lines.append("└" + "─" * 48 + "┘")
-
-    # 追加到本地卡片库
     _append_to_library(title, content)
 
     return "\n".join(lines)
